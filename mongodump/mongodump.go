@@ -18,7 +18,9 @@ import (
 	"gopkg.in/mgo.v2/bson"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -48,6 +50,8 @@ type MongoDump struct {
 	authVersion     int
 	archive         *archive.Writer
 	progressManager *progress.Manager
+	// channel on which to notify if/when a termination signal is received
+	termChan chan struct{}
 }
 
 // ValidateOptions checks for any incompatible sets of options.
@@ -285,6 +289,9 @@ func (dump *MongoDump) Dump() error {
 	dump.progressManager.Start()
 	defer dump.progressManager.Stop()
 
+	dump.termChan = make(chan struct{}, 1)
+	go dump.handleSignals()
+
 	// dump all queued collections
 	if err := dump.DumpIntents(); err != nil {
 		return err
@@ -469,8 +476,7 @@ func (dump *MongoDump) dumpQueryToWriter(
 	dump.progressManager.Attach(bar)
 	defer dump.progressManager.Detach(bar)
 
-	iter := query.Iter()
-	return dump.dumpIterToWriter(iter, intent.BSONFile, dumpProgressor)
+	return dump.dumpIterToWriter(query.Iter(), intent.BSONFile, dumpProgressor)
 }
 
 // dumpIterToWriter takes an mgo iterator, a writer, and a pointer to
@@ -484,18 +490,24 @@ func (dump *MongoDump) dumpIterToWriter(
 	buffChan := make(chan []byte)
 	go func() {
 		for {
-			raw := &bson.Raw{}
-			next := iter.Next(raw)
-			if !next {
+			select {
+			case <-dump.termChan:
+				log.Logf(log.Always, "terminating writes")
 				// we check the iterator for errors below
 				close(buffChan)
 				return
+			default:
+				raw := &bson.Raw{}
+				next := iter.Next(raw)
+				if !next {
+					// we check the iterator for errors below
+					close(buffChan)
+					return
+				}
+				nextCopy := make([]byte, len(raw.Data))
+				copy(nextCopy, raw.Data)
+				buffChan <- nextCopy
 			}
-
-			nextCopy := make([]byte, len(raw.Data))
-			copy(nextCopy, raw.Data)
-
-			buffChan <- nextCopy
 		}
 	}()
 
@@ -677,4 +689,16 @@ func (dump *MongoDump) getArchiveOut() (out io.WriteCloser, err error) {
 		}, nil
 	}
 	return out, nil
+}
+
+// handleSignals listens for either SIGTERM, SIGINT or the
+// SIGHUP signal. It ends restore reads for all goroutines
+// as soon as any of those signals is received.
+func (dump *MongoDump) handleSignals() {
+	log.Log(log.DebugLow, "will listen for SIGTERM, SIGINT and SIGHUP")
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	<-sigChan
+	log.Log(log.Always, "ending dump writes")
+	close(dump.termChan)
 }

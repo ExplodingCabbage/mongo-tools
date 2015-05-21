@@ -16,8 +16,10 @@ import (
 	"gopkg.in/mgo.v2/bson"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 // MongoRestore is a container for the user-specified options and
@@ -54,6 +56,9 @@ type MongoRestore struct {
 	dbCollectionIndexes map[string]collectionIndexes
 
 	archive *archive.Reader
+
+	// channel on which to notify if/when a termination signal is received
+	termChan chan struct{}
 }
 
 type collectionIndexes map[string][]IndexDocument
@@ -277,6 +282,7 @@ func (restore *MongoRestore) Restore() error {
 		restore.archive.Demux.NamespaceErrorChan = namespaceErrorChan
 
 		go restore.archive.Demux.Run()
+
 		// consume the new namespace announcement from the demux for all of the collections that get cached
 		for {
 			ns := <-namespaceChan
@@ -335,8 +341,10 @@ func (restore *MongoRestore) Restore() error {
 		restore.manager.Finalize(intents.Legacy)
 	}
 
-	err = restore.RestoreIntents()
-	if err != nil {
+	restore.termChan = make(chan struct{}, 1)
+	go restore.handleSignals()
+
+	if err = restore.RestoreIntents(); err != nil {
 		return fmt.Errorf("restore error: %v", err)
 	}
 
@@ -396,4 +404,16 @@ func (restore *MongoRestore) getArchiveReader() (rc io.ReadCloser, err error) {
 		return gzip.NewReader(rc)
 	}
 	return rc, nil
+}
+
+// handleSignals listens for either SIGTERM, SIGINT or the
+// SIGHUP signal. It ends restore reads for all goroutines
+// as soon as any of those signals is received.
+func (restore *MongoRestore) handleSignals() {
+	log.Log(log.DebugLow, "will listen for SIGTERM, SIGINT and SIGHUP")
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	<-sigChan
+	log.Log(log.Always, "ending restore reads")
+	close(restore.termChan)
 }

@@ -54,6 +54,21 @@ func (f *realBSONFile) Open() (err error) {
 	return nil
 }
 
+// Write guarantees that when it returns, either the entire
+// contents of buf or none of it, has been flushed by the writer.
+func (f *realBSONFile) Write(buf []byte) (int, error) {
+	if len(buf) > f.Writer.Available() {
+		f.Writer.Flush()
+	}
+	if len(buf) > f.Writer.Available() {
+		l, e := f.Writer.Write(buf)
+		f.Writer.Flush()
+		return l, e
+	}
+	return f.Writer.Write(buf)
+
+}
+
 // Read is is part of the intents.file interface, Read on realBSONFile shouldn't be used.r
 // We could probabbly justifiably panic here.
 func (f *realBSONFile) Read([]byte) (int, error) {
