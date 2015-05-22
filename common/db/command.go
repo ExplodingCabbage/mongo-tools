@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"github.com/mongodb/mongo-tools/common/util"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"strings"
@@ -179,6 +180,36 @@ func (sp *SessionProvider) SupportsWriteCommands() (bool, error) {
 	// the connected server supports write commands if
 	// the maxWriteVersion field is present
 	return (masterDoc.Ok == 1 && masterDoc.MaxWire >= 2), nil
+}
+
+// VersionArray returns the an array of the build version of
+// the server it's connected to.
+func (sp *SessionProvider) VersionArray() ([]int, error) {
+	session, err := sp.GetSession()
+	if err != nil {
+		return nil, err
+	}
+	session.SetSocketTimeout(0)
+	defer session.Close()
+	buildInfo := struct {
+		Ok           int    `bson:"ok"`
+		ErrMsg       string `bson:errmsg"`
+		VersionArray []int  `bson:"versionArray"`
+	}{}
+	err = session.Run("buildInfo", &buildInfo)
+	if err != nil {
+		return nil, err
+	}
+
+	if util.IsFalsy(buildInfo.Ok) {
+		return nil, fmt.Errorf("error getting server version: %v", buildInfo.ErrMsg)
+	}
+
+	if len(buildInfo.VersionArray) != 4 {
+		return nil, fmt.Errorf("inconsistent server version array: %v", buildInfo.VersionArray)
+	}
+
+	return buildInfo.VersionArray, nil
 }
 
 // FindOne retuns the first document in the collection and database that matches

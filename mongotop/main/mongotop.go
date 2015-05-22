@@ -92,6 +92,18 @@ func main() {
 		os.Exit(util.ExitError)
 	}
 
+	versionArray, err := sessionProvider.VersionArray()
+	if err != nil {
+		log.Logf(log.Always, "Failed: %v", err)
+		os.Exit(util.ExitError)
+	}
+
+	if versionArray[0] > 2 && outputOpts.Locks {
+		log.Logf(log.Always, "--locks not available on %v.%v.%v server",
+			versionArray[0], versionArray[1], versionArray[2])
+		os.Exit(util.ExitError)
+	}
+
 	// instantiate a mongotop instance
 	top := &mongotop.MongoTop{
 		Options:         opts,
